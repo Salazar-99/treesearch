@@ -19,7 +19,7 @@ from hud import graders
 # The environment is the registration hub. `name`/`version` identify it on the
 # HUD platform; capabilities (ssh, cdp, mcp, ...) can be attached here or inside
 # the `initialize` hook once the resources they describe actually exist.
-env = Environment(name="rl-hackathon-env", version="0.1.0")
+env = Environment(name="treefarm-env", version="0.1.0")
 
 
 # --- Lifecycle hooks --------------------------------------------------------

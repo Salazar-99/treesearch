@@ -1,4 +1,4 @@
-# rl-hackathon
+# treefarm
 
 A reinforcement-learning project made of two independent pieces:
 

@@ -20,7 +20,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Crop RL Environment</h1>
+        <h1>Treefarm</h1>
         <div className="run-info">
           <span>{cropName}</span>
           <span>Episode {episode}</span>

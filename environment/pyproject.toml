@@ -1,7 +1,7 @@
 [project]
 name = "environment"
 version = "0.1.0"
-description = "HUD RL environment for the rl-hackathon project"
+description = "HUD RL environment for the treefarm project"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
