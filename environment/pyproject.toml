@@ -1,0 +1,9 @@
+[project]
+name = "environment"
+version = "0.1.0"
+description = "HUD RL environment for the rl-hackathon project"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "hud-python>=0.6.6",
+]
