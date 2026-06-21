@@ -1,0 +1,11 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.python-version
+
+# Environment
+.env
+
+# HUD
+.hud/
