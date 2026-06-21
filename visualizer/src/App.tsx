@@ -253,42 +253,41 @@ function App() {
           </div>
         </section>
 
-        <aside className="panel actions">
-          <h2 className="panel-title">Agent tools</h2>
-          <ul className="action-list">
-            {nextActions.map((a) => (
-              <li key={a.id} className="action">
-                <div className="action-head">
-                  <span className="action-label">{a.label}</span>
-                  <span className="action-confidence">{Math.round(a.confidence * 100)}%</span>
-                </div>
-                <div className="action-detail">{a.detail}</div>
-                <div className="confidence-bar">
-                  <div className="confidence-fill" style={{ width: `${a.confidence * 100}%` }} />
-                </div>
-              </li>
-            ))}
-          </ul>
-        </aside>
+        <aside className="sidebar">
+          <section className="panel actions">
+            <h2 className="panel-title">Agent tools</h2>
+            <ul className="action-list">
+              {nextActions.map((a) => (
+                <li key={a.id} className="action">
+                  <div className="action-head">
+                    <span className="action-label">{a.label}</span>
+                    <span className="action-confidence">{Math.round(a.confidence * 100)}%</span>
+                  </div>
+                  <div className="action-detail">{a.detail}</div>
+                  <div className="confidence-bar">
+                    <div className="confidence-fill" style={{ width: `${a.confidence * 100}%` }} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
 
-        <section className="panel metrics">
-          <h2 className="panel-title">Farm state</h2>
-          <div className="metric-grid">
-            {stateMetrics.map((m) => (
-              <div key={m.key} className={`metric ${inRange(m) ? '' : 'out-of-range'}`}>
-                <div className="metric-label">{m.label}</div>
-                <div className="metric-value">
-                  {m.value}
-                  <span className="metric-unit">{m.unit}</span>
-                  <span className={`metric-trend trend-${m.trend}`}>{trendGlyph(m.trend)}</span>
+          <section className="panel metrics">
+            <h2 className="panel-title">Farm state</h2>
+            <div className="metric-grid">
+              {stateMetrics.map((m) => (
+                <div key={m.key} className={`metric ${inRange(m) ? '' : 'out-of-range'}`}>
+                  <div className="metric-label">{m.label}</div>
+                  <div className="metric-value">
+                    {m.value}
+                    <span className="metric-unit">{m.unit}</span>
+                    <span className={`metric-trend trend-${m.trend}`}>{trendGlyph(m.trend)}</span>
+                  </div>
                 </div>
-                <div className="metric-range">
-                  range {m.range[0]}–{m.range[1]} {m.unit}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+              ))}
+            </div>
+          </section>
+        </aside>
       </main>
     </div>
   )
