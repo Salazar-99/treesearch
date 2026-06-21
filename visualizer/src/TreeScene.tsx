@@ -685,7 +685,7 @@ export default function TreeScene({
       dpr={[1, 2]}
       camera={{ position: [0, camY, camZ], fov: 45 }}
       gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.05 }}
-      style={{ borderRadius: 8 }}
+      style={{ width: '100%', height: '100%', display: 'block' }}
     >
       <Suspense fallback={null}>
         <Scene compiled={compiled} clock={clock} onProgress={onProgress} wateringFlags={wateringFlags} />
