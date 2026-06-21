@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import type { MutableRefObject } from 'react'
 import { sampleWatering, type PlaybackClock } from './sceneState'
 
-const ROBOT_COUNT = 4
+const ROBOT_COUNT: number = 4
 /** Overall robot scale. The base mesh is ~0.7 m tall; this lifts it to ~3 m so
  *  it reads clearly against the ~7 m trees. */
 const ROBOT_SCALE = 4
