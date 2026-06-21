@@ -14,10 +14,10 @@ Only some gateway models can be trained. List forkable bases and create your own
 
 ```bash
 uv run hud models list                              # Trainable column marks forkable bases
-uv run hud models fork Qwen/Qwen3.5-4B --name treesearch-rl
+uv run hud models fork Qwen/Qwen3.5-4B --name treesearch
 ```
 
-Set the `MODEL` constant in `train.py` to your fork slug (default: `treesearch-rl`).
+Set the `MODEL` constant in `train.py` to your fork slug (default: `treesearch`).
 
 Set your API key once (see https://hud.ai/project/api-keys):
 
@@ -38,9 +38,9 @@ uv run python train.py
 Monitor checkpoint progress:
 
 ```bash
-uv run hud models checkpoints treesearch-rl
-uv run hud models head treesearch-rl              # show active checkpoint
-uv run hud models head treesearch-rl --set <id>   # roll back or branch
+uv run hud models checkpoints treesearch
+uv run hud models head treesearch              # show active checkpoint
+uv run hud models head treesearch --set <id>   # roll back or branch
 ```
 
 ## How it works

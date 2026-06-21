@@ -1,12 +1,14 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import TreeScene, { type PlaybackClock } from './TreeScene'
 import {
   compileTimeline,
   dayAt,
   exampleRun,
+  exampleUntrainedRun,
   parseRunState,
   runToTimeline,
+  wateringFlagsFromRun,
   type RunState,
   type StateMetric,
 } from './sceneState'
@@ -19,18 +21,30 @@ function inRange(m: StateMetric) {
   return m.value >= m.range[0] && m.value <= m.range[1]
 }
 
+type RunSource = 'trained' | 'untrained'
+
 const SPEEDS = [0.5, 1, 2, 4]
-const initialRun = exampleRun()
 
 function App() {
-  const [run, setRun] = useState<RunState>(initialRun)
-  const [error, setError] = useState<string | null>(null)
+  const [trainedRun, setTrainedRun] = useState<RunState>(exampleRun)
+  const [untrainedRun, setUntrainedRun] = useState<RunState>(exampleUntrainedRun)
+  const [activeSource, setActiveSource] = useState<RunSource>('trained')
+  const [errors, setErrors] = useState<Record<RunSource, string | null>>({
+    trained: null,
+    untrained: null,
+  })
+  const [fileNames, setFileNames] = useState<Record<RunSource, string | null>>({
+    trained: null,
+    untrained: null,
+  })
 
+  const run = activeSource === 'trained' ? trainedRun : untrainedRun
   const timeline = useMemo(() => runToTimeline(run), [run])
+  const wateringFlags = useMemo(() => wateringFlagsFromRun(run), [run])
 
-  // Playback state mirrored into the render-loop clock (see TreeScene).
   const clock = useRef<PlaybackClock>({ t: 0, playing: true, speed: 1, seek: null })
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const trainedInputRef = useRef<HTMLInputElement>(null)
+  const untrainedInputRef = useRef<HTMLInputElement>(null)
   const [playing, setPlaying] = useState(true)
   const [speed, setSpeed] = useState(1)
   const [progress, setProgress] = useState(0)
@@ -41,21 +55,35 @@ function App() {
 
   const dayIndex = Math.min(maxT, Math.max(0, Math.round(progress)))
   const currentDay = dayAt(run, dayIndex)
-  const frameLabel = currentDay?.label ?? compiled.labels[dayIndex] ?? `Day ${dayIndex}`
-  const cropName = currentDay?.environment.crop ?? '—'
-  const episode = currentDay?.environment.episode ?? '—'
-  const step = currentDay?.environment.step ?? dayIndex
+  const frameLabel = currentDay?.label ?? compiled.labels[dayIndex] ?? `Year ${dayIndex}`
+  const farmName = currentDay?.environment.crop ?? 'Rubber plantation'
+  const year = currentDay?.environment.year
+  const simDay = currentDay?.environment.day ?? currentDay?.environment.step ?? dayIndex
+  const yearsLeft = currentDay?.environment.yearsLeft
+  const profit =
+    currentDay?.environment.metrics.find((m) => m.key === 'profit')?.value ??
+    currentDay?.environment.metrics.find((m) => m.key === 'revenue')?.value
   const stateMetrics = currentDay?.environment.metrics ?? []
   const nextActions = currentDay?.nextAction ?? []
 
-  // The render loop pushes the playhead here so the scrubber tracks playback.
+  const resetPlayback = useCallback(() => {
+    clock.current.t = 0
+    clock.current.seek = null
+    setProgress(0)
+  }, [])
+
+  useEffect(() => {
+    resetPlayback()
+  }, [activeSource, resetPlayback])
+
   const handleProgress = useCallback((t: number) => setProgress(t), [])
 
-  function openStateUpload() {
-    fileInputRef.current?.click()
+  function openUpload(source: RunSource) {
+    if (source === 'trained') trainedInputRef.current?.click()
+    else untrainedInputRef.current?.click()
   }
 
-  function handleStateUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleUpload(source: RunSource, e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
@@ -64,16 +92,18 @@ function App() {
     reader.onload = () => {
       const { run: parsed, error: parseError } = parseRunState(String(reader.result ?? ''))
       if (parsed) {
-        setRun(parsed)
-        setError(null)
-        clock.current.t = 0
-        clock.current.seek = null
-        setProgress(0)
+        if (source === 'trained') setTrainedRun(parsed)
+        else setUntrainedRun(parsed)
+        setErrors((prev) => ({ ...prev, [source]: null }))
+        setFileNames((prev) => ({ ...prev, [source]: file.name }))
+        if (source === activeSource) resetPlayback()
       } else {
-        setError(parseError)
+        setErrors((prev) => ({ ...prev, [source]: parseError }))
       }
     }
-    reader.onerror = () => setError('Could not read the selected file.')
+    reader.onerror = () => {
+      setErrors((prev) => ({ ...prev, [source]: 'Could not read the selected file.' }))
+    }
     reader.readAsText(file)
   }
 
@@ -96,21 +126,49 @@ function App() {
     setProgress(day)
   }
 
+  const activeError = errors[activeSource]
+
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Treesearch</h1>
+        <div className="app-header-left">
+          <h1>Treesearch</h1>
+        </div>
         <div className="run-info">
-          <span>{cropName}</span>
-          <span>Episode {episode}</span>
-          <span>Step {step}</span>
+          <span>{farmName}</span>
+          {year !== undefined ? <span>Year {year}</span> : null}
+          <span>Day {simDay}</span>
+          {yearsLeft !== undefined ? <span>{yearsLeft}y left</span> : null}
+          {profit !== undefined ? <span>Profit ${profit.toFixed(0)}</span> : null}
         </div>
       </header>
 
       <main className="layout">
         <section className="panel visualization">
           <div className="visualization-canvas" aria-label="3D Treesearch scene">
-            <TreeScene timeline={timeline} clock={clock} onProgress={handleProgress} />
+            <TreeScene
+              timeline={timeline}
+              clock={clock}
+              onProgress={handleProgress}
+              wateringFlags={wateringFlags}
+            />
+          </div>
+
+          <div className="run-source" role="group" aria-label="Select run to visualize">
+            <span className="run-source-label">Visualizing</span>
+            <div className="source-select">
+              {(['trained', 'untrained'] as const).map((source) => (
+                <button
+                  key={source}
+                  type="button"
+                  className={`source-button ${activeSource === source ? 'active' : ''}`}
+                  onClick={() => setActiveSource(source)}
+                  aria-pressed={activeSource === source}
+                >
+                  {source === 'trained' ? 'Trained' : 'Untrained'}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="playback" role="group" aria-label="Timeline playback">
@@ -152,28 +210,51 @@ function App() {
 
           <div className="state-upload">
             <input
-              ref={fileInputRef}
+              ref={trainedInputRef}
               type="file"
               accept=".json,application/json"
-              onChange={handleStateUpload}
+              onChange={(e) => handleUpload('trained', e)}
               hidden
             />
-            <button className="state-button" type="button" onClick={openStateUpload}>
-              Upload state.json
-            </button>
-            {error ? (
-              <span className="state-error">{error}</span>
-            ) : (
+            <input
+              ref={untrainedInputRef}
+              type="file"
+              accept=".json,application/json"
+              onChange={(e) => handleUpload('untrained', e)}
+              hidden
+            />
+            <div className="state-upload-row">
+              {(['trained', 'untrained'] as const).map((source) => (
+                <div key={source} className="state-upload-slot">
+                  <button
+                    className="state-button"
+                    type="button"
+                    onClick={() => openUpload(source)}
+                  >
+                    Upload {source === 'trained' ? 'trained' : 'untrained'}
+                  </button>
+                  <span className="state-file-name">
+                    {fileNames[source] ?? (source === 'trained' ? 'trained example' : 'untrained example')}
+                  </span>
+                  {errors[source] ? (
+                    <span className="state-error">{errors[source]}</span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            {!activeError ? (
               <span className="state-hint">
-                {compiled.frameCount} day{compiled.frameCount === 1 ? '' : 's'},{' '}
+                {compiled.frameCount} year{compiled.frameCount === 1 ? '' : 's'},{' '}
                 {compiled.tracks.length} tree{compiled.tracks.length === 1 ? '' : 's'}
               </span>
+            ) : (
+              <span className="state-error">{activeError}</span>
             )}
           </div>
         </section>
 
         <aside className="panel actions">
-          <h2 className="panel-title">Model next actions</h2>
+          <h2 className="panel-title">Agent tools</h2>
           <ul className="action-list">
             {nextActions.map((a) => (
               <li key={a.id} className="action">
@@ -191,7 +272,7 @@ function App() {
         </aside>
 
         <section className="panel metrics">
-          <h2 className="panel-title">State metrics</h2>
+          <h2 className="panel-title">Farm state</h2>
           <div className="metric-grid">
             {stateMetrics.map((m) => (
               <div key={m.key} className={`metric ${inRange(m) ? '' : 'out-of-range'}`}>

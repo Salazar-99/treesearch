@@ -19,6 +19,12 @@
   border-bottom: 1px solid var(--border);
 }
 
+.app-header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
 .app-header h1 {
   font-size: 1.6rem;
   font-weight: 400;
@@ -104,6 +110,54 @@
 .visualization-canvas canvas {
   border-radius: 0 !important;
   display: block;
+}
+
+.run-source {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.run-source-label {
+  font-size: 0.95rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.source-select {
+  display: flex;
+  gap: 4px;
+}
+
+.source-button {
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 2px 12px;
+  cursor: pointer;
+  text-shadow: inherit;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.source-button:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.source-button.active {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+  text-shadow: none;
 }
 
 .playback {
@@ -192,11 +246,29 @@
 .state-upload {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 10px;
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px dashed var(--border);
+}
+
+.state-upload-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+}
+
+.state-upload-slot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.state-file-name {
+  font-size: 0.95rem;
+  color: var(--muted);
 }
 
 .state-button {

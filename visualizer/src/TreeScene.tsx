@@ -16,9 +16,11 @@ import {
   compileTimeline,
   sampleTrack,
   type CompiledTimeline,
+  type PlaybackClock,
   type Timeline,
   type TreeTrack,
 } from './sceneState'
+import WateringRobots from './WateringRobots'
 
 /* Draco-compressed tree GLB. Lives in public/, served at root. */
 const MODEL_URL = '/models/trees.glb'
@@ -232,15 +234,7 @@ const AUTUMN = new THREE.Color('#b07a2a')
 /* ------------------------------------------------------------------ */
 
 /** Mutable playback state shared between the DOM controls and the render loop. */
-export interface PlaybackClock {
-  /** Continuous playhead in day units (0 .. frameCount-1). Fractional part = time of day. */
-  t: number
-  playing: boolean
-  /** Playback rate, in days per second. */
-  speed: number
-  /** When set, the render loop jumps the playhead here and clears it. */
-  seek: number | null
-}
+export type { PlaybackClock } from './sceneState'
 
 /** Apply seek / playback advance. Runs before lighting and tree updates each frame. */
 function tickPlaybackClock(
@@ -615,10 +609,12 @@ function Scene({
   compiled,
   clock,
   onProgress,
+  wateringFlags,
 }: {
   compiled: CompiledTimeline
   clock: MutableRefObject<PlaybackClock>
   onProgress: (t: number) => void
+  wateringFlags: boolean[]
 }) {
   const templates = useTreeTemplates()
   const soilHalf = compiled.fieldHalf + 3
@@ -654,6 +650,12 @@ function Scene({
         />
       )}
 
+      <WateringRobots
+        fieldHalf={soilHalf}
+        wateringFlags={wateringFlags}
+        clock={clock}
+      />
+
       <Clouds material={THREE.MeshBasicMaterial}>
         <Cloud position={[-18, 24, -28]} speed={0.15} opacity={0.7} bounds={[12, 4, 4]} />
         <Cloud position={[16, 26, -34]} speed={0.15} opacity={0.55} bounds={[14, 4, 4]} />
@@ -667,10 +669,12 @@ export default function TreeScene({
   timeline,
   clock,
   onProgress,
+  wateringFlags,
 }: {
   timeline: Timeline
   clock: MutableRefObject<PlaybackClock>
   onProgress: (t: number) => void
+  wateringFlags: boolean[]
 }) {
   const compiled = useMemo(() => compileTimeline(timeline), [timeline])
   const camZ = Math.max(42, compiled.fieldHalf * 1.45)
@@ -684,7 +688,7 @@ export default function TreeScene({
       style={{ borderRadius: 8 }}
     >
       <Suspense fallback={null}>
-        <Scene compiled={compiled} clock={clock} onProgress={onProgress} />
+        <Scene compiled={compiled} clock={clock} onProgress={onProgress} wateringFlags={wateringFlags} />
       </Suspense>
       <OrbitControls
         enablePan={false}

@@ -1,11 +1,10 @@
-# Python / uv
-.venv/
+# Python-generated files
 __pycache__/
-*.py[cod]
-.python-version
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
 
-# Environment
-.env
-
-# HUD
-.hud/
+# Virtual environments
+.venv

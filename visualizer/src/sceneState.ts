@@ -15,6 +15,21 @@
 
 export type Trend = 'up' | 'down' | 'flat'
 
+/** Rubber-tree life stage (matches Farm.objects.RubberTree.stage). */
+export type TreeStage = 'seedling' | 'young' | 'mature' | 'tapping' | 'dead'
+
+/** MCP farm tools exposed to the agent (see luke-treesearch/env.py). */
+export type FarmTool =
+  | 'observe'
+  | 'render'
+  | 'status'
+  | 'water'
+  | 'fertilize'
+  | 'tap'
+  | 'advance'
+  | 'quote'
+  | 'simulate'
+
 export interface StateMetric {
   key: string
   label: string
@@ -27,16 +42,24 @@ export interface StateMetric {
 
 export interface AgentAction {
   id: string
-  /** The environment modification the model proposes. */
+  /** Tool name shown in the actions panel (Water, Tap, Advance, …). */
   label: string
   detail: string
   /** Model confidence in this action, 0-1. */
   confidence: number
+  /** When set, identifies the farm MCP tool this action maps to. */
+  tool?: FarmTool
 }
 
-/** Physical / run metadata shown in the header and metrics panel. */
+/** Farm snapshot metadata — mirrors Farm.observe() top-level fields. */
 export interface EnvironmentState {
   crop?: string
+  year?: number
+  day?: number
+  dayOfYear?: number
+  yearsLeft?: number
+  finished?: boolean
+  /** Legacy step index for uploaded runs that omit calendar fields. */
   episode?: number
   step?: number
   metrics: StateMetric[]
@@ -62,14 +85,26 @@ export interface RunState {
 export interface TreeState {
   /** Optional stable id — also seeds this tree's random shape. */
   id?: string
+  /** Grid row (farm simulation coordinate). */
+  row?: number
+  /** Grid column (farm simulation coordinate). */
+  col?: number
   /** Field position, left→right. */
   x: number
   /** Field position, front→back. */
   y: number
-  /** Overall scale. 1 ≈ a mature tree. Default 1. */
+  /** Trunk girth in cm (Farm.objects.RubberTree.girth_cm). Drives size when set. */
+  girthCm?: number
+  /** Overall scale. 1 ≈ reference girth (~50 cm). Default 1. */
   size?: number
   /** Health/lushness in [0,1]: 1 = full green canopy, 0 = sparse & yellowed. Default 1. */
   health?: number
+  /** Life stage for legend / filtering. */
+  stage?: TreeStage
+  /** Whether latex tapping is active on this tree. */
+  tapping?: boolean
+  /** False when the tree has died of age or poor health. */
+  alive?: boolean
 }
 
 export interface SceneState {
@@ -127,18 +162,28 @@ function hashString(s: string): number {
   return h >>> 0
 }
 
+/** Reference girth for a mature tree in the farm model (cm). */
+export const REFERENCE_GIRTH_CM = 50
+
+export function girthToSize(girthCm: number): number {
+  return clamp(girthCm / REFERENCE_GIRTH_CM, 0.12, 1.4)
+}
+
 export function resolveTrees(state: SceneState): ResolvedTree[] {
-  return state.trees.map((t, i) => {
-    const id = t.id ?? `tree-${i}`
-    return {
-      id,
-      x: t.x,
-      y: t.y,
-      size: clamp(t.size ?? 1, 0.2, 4),
-      health: clamp(t.health ?? 1, 0, 1),
-      seed: hashString(id),
-    }
-  })
+  return state.trees
+    .filter((t) => t.alive !== false && t.stage !== 'dead')
+    .map((t, i) => {
+      const id = t.id ?? `tree-${i}`
+      const sizeFromGirth = t.girthCm !== undefined ? girthToSize(t.girthCm) : undefined
+      return {
+        id,
+        x: t.x,
+        y: t.y,
+        size: clamp(sizeFromGirth ?? t.size ?? 1, 0.12, 4),
+        health: clamp(t.health ?? 1, 0, 1),
+        seed: hashString(id),
+      }
+    })
 }
 
 export function fieldSize(state: SceneState): number {
@@ -243,6 +288,43 @@ export function dayAt(run: RunState, dayIndex: number): DayRecord | null {
   return run.days[i] ?? null
 }
 
+/** True when an agent action is the farm `water` tool. */
+export function isWateringAction(action: AgentAction): boolean {
+  if (action.tool === 'water') return true
+  const text = `${action.label} ${action.detail}`.toLowerCase()
+  return /\b(water|irrigation|irrigate)\b/.test(text)
+}
+
+/** Per-day flag: top-confidence next action is watering. */
+export function wateringFlagsFromRun(run: RunState): boolean[] {
+  return run.days.map((day) => {
+    const top = day.nextAction[0]
+    return top !== undefined && isWateringAction(top)
+  })
+}
+
+/** Mutable playback state shared between the DOM controls and the render loop. */
+export interface PlaybackClock {
+  /** Continuous playhead in day units (0 .. frameCount-1). Fractional part = time of day. */
+  t: number
+  playing: boolean
+  /** Playback rate, in days per second. */
+  speed: number
+  /** When set, the render loop jumps the playhead here and clears it. */
+  seek: number | null
+}
+
+/** Blend watering activity across fractional playhead `t` (0 = off, 1 = on). */
+export function sampleWatering(flags: boolean[], t: number): number {
+  if (flags.length === 0) return 0
+  const i = clamp(Math.floor(t), 0, flags.length - 1)
+  const j = Math.min(flags.length - 1, i + 1)
+  const f = clamp(t - i, 0, 1)
+  const a = flags[i] ? 1 : 0
+  const b = flags[j] ? 1 : 0
+  return lerp(a, b, smoothstep(f))
+}
+
 /** A tree's interpolated state at a fractional playhead `t` (in frame units). */
 export interface TreeRender {
   x: number
@@ -298,42 +380,208 @@ export function sampleTrack(track: TreeTrack, t: number): TreeRender {
 
 type Result<T> = { value: T; error: null } | { value: null; error: string }
 
+const FARM_TOOLS = new Set<FarmTool>([
+  'observe',
+  'render',
+  'status',
+  'water',
+  'fertilize',
+  'tap',
+  'advance',
+  'quote',
+  'simulate',
+])
+
+const TREE_STAGES = new Set<TreeStage>(['seedling', 'young', 'mature', 'tapping', 'dead'])
 const TRENDS = new Set<Trend>(['up', 'down', 'flat'])
+
+function validateFarmTool(raw: unknown, where: string): Result<FarmTool | undefined> {
+  if (raw === undefined) return { value: undefined, error: null }
+  if (typeof raw !== 'string' || !FARM_TOOLS.has(raw as FarmTool)) {
+    return { value: null, error: `${where} must be a farm tool name.` }
+  }
+  return { value: raw as FarmTool, error: null }
+}
 
 /** Default metrics/actions used when legacy timeline JSON omits them. */
 export const defaultEnvironment = (step = 0): EnvironmentState => ({
-  crop: 'Rubber Tree',
-  episode: 42,
+  crop: 'Rubber plantation',
+  year: 2025 + step,
+  day: step * 365,
+  dayOfYear: 0,
+  yearsLeft: 30 - step,
+  finished: false,
   step,
   metrics: defaultMetrics(step),
 })
 
-export function defaultMetrics(step = 0): StateMetric[] {
-  const wobble = (base: number, amp: number) =>
-    Number((base + Math.sin(step * 0.17) * amp).toFixed(1))
-  return [
-    { key: 'plant_size', label: 'Plant size', value: wobble(38.4, 4), unit: 'cm', range: [0, 120], trend: 'up' },
-    { key: 'soil_ph', label: 'Soil pH', value: 6.4, unit: 'pH', range: [6.0, 6.8], trend: 'flat' },
-    { key: 'humidity', label: 'Humidity', value: wobble(58, 6), unit: '%', range: [50, 70], trend: 'down' },
-    { key: 'temperature', label: 'Temperature', value: wobble(24.1, 2), unit: '°C', range: [18, 27], trend: 'up' },
-    { key: 'water_level', label: 'Water level', value: wobble(41, 8), unit: '%', range: [40, 80], trend: 'down' },
-    { key: 'light', label: 'Light', value: 720, unit: 'µmol', range: [400, 900], trend: 'flat' },
-    { key: 'nutrients', label: 'Nutrients (N)', value: wobble(132, 12), unit: 'ppm', range: [100, 200], trend: 'down' },
-    { key: 'co2', label: 'CO₂', value: 410, unit: 'ppm', range: [350, 500], trend: 'flat' },
+function trendFromDelta(delta: number): Trend {
+  if (delta > 0.005) return 'up'
+  if (delta < -0.005) return 'down'
+  return 'flat'
+}
+
+/** Build metrics from a farm observe()-shaped snapshot. */
+export function farmMetrics(
+  obs: {
+    averages?: Partial<Record<'age_years' | 'girth_cm' | 'health' | 'panel_health' | 'moisture' | 'nutrients', number>>
+    trees?: Partial<Record<'total' | 'living' | 'tappable' | 'tapping', number>>
+    economics?: Partial<
+      Record<'revenue' | 'cost' | 'profit' | 'latex_lb' | 'water_gallons' | 'fertilizer_units', number>
+    >
+    budget?: Partial<Record<'annual' | 'spent_this_year' | 'remaining_this_year', number>>
+    prices?: Partial<Record<'rubber_per_lb' | 'water_per_gallon' | 'fertilizer_per_unit', number>>
+  },
+  prev?: StateMetric[],
+): StateMetric[] {
+  const prevVal = (key: string, fallback: number) =>
+    prev?.find((m) => m.key === key)?.value ?? fallback
+
+  const a = obs.averages ?? {}
+  const t = obs.trees ?? {}
+  const e = obs.economics ?? {}
+  const b = obs.budget ?? {}
+  const p = obs.prices ?? {}
+
+  const defs: Omit<StateMetric, 'trend'>[] = [
+    { key: 'profit', label: 'Profit', value: e.profit ?? 0, unit: '$', range: [-500, 5000] },
+    { key: 'revenue', label: 'Revenue', value: e.revenue ?? 0, unit: '$', range: [0, 6000] },
+    { key: 'cost', label: 'Cost', value: e.cost ?? 0, unit: '$', range: [0, 800] },
+    { key: 'latex_lb', label: 'Rubber harvested', value: e.latex_lb ?? 0, unit: 'lb', range: [0, 4000] },
+    { key: 'budget_remaining', label: 'Budget left', value: b.remaining_this_year ?? 800, unit: '$', range: [0, 800] },
+    { key: 'budget_spent', label: 'Budget spent', value: b.spent_this_year ?? 0, unit: '$', range: [0, 800] },
+    { key: 'living', label: 'Living trees', value: t.living ?? 36, unit: '', range: [0, 36] },
+    { key: 'tappable', label: 'Tappable trees', value: t.tappable ?? 0, unit: '', range: [0, 36] },
+    { key: 'tapping', label: 'Trees tapping', value: t.tapping ?? 0, unit: '', range: [0, 36] },
+    { key: 'age_years', label: 'Avg age', value: a.age_years ?? 0, unit: 'y', range: [0, 34] },
+    { key: 'girth_cm', label: 'Avg girth', value: a.girth_cm ?? 3, unit: 'cm', range: [3, 70] },
+    { key: 'health', label: 'Avg health', value: a.health ?? 1, unit: '', range: [0.35, 1] },
+    { key: 'panel_health', label: 'Tapping panel', value: a.panel_health ?? 1, unit: '', range: [0.4, 1] },
+    { key: 'moisture', label: 'Soil moisture', value: a.moisture ?? 0.5, unit: '', range: [0.35, 1] },
+    { key: 'nutrients', label: 'Soil nutrients', value: a.nutrients ?? 0.5, unit: '', range: [0.25, 1] },
+    { key: 'rubber_price', label: 'Rubber price', value: p.rubber_per_lb ?? 0.9, unit: '$/lb', range: [0.2, 1.5] },
+    { key: 'water_price', label: 'Water price', value: p.water_per_gallon ?? 0.004, unit: '$/gal', range: [0.0005, 0.01] },
+    {
+      key: 'fertilizer_price',
+      label: 'Fertilizer price',
+      value: p.fertilizer_per_unit ?? 2.5,
+      unit: '$/unit',
+      range: [0.5, 4],
+    },
   ]
+
+  return defs.map((d) => {
+    const decimals =
+      d.unit === '$/lb' || d.unit === '$/gal' || d.unit === '$/unit'
+        ? 4
+        : d.unit === '' && (d.key.includes('health') || d.key === 'moisture' || d.key === 'nutrients')
+          ? 3
+          : 2
+    const value = Number(d.value.toFixed(decimals))
+    return {
+      ...d,
+      value,
+      trend: trendFromDelta(value - prevVal(d.key, value)),
+    }
+  })
+}
+
+export function defaultMetrics(step = 0): StateMetric[] {
+  const wobble = (base: number, amp: number) => base + Math.sin(step * 0.31) * amp
+  return farmMetrics({
+    averages: {
+      age_years: Number(wobble(4.7, 0.4).toFixed(2)),
+      girth_cm: Number(wobble(40, 3).toFixed(2)),
+      health: Number(clamp(wobble(0.88, 0.08), 0.35, 1).toFixed(3)),
+      panel_health: Number(clamp(1 - step * 0.015, 0.5, 1).toFixed(3)),
+      moisture: Number(clamp(wobble(0.55, 0.12), 0.2, 1).toFixed(3)),
+      nutrients: Number(clamp(wobble(0.52, 0.15), 0.15, 1).toFixed(3)),
+    },
+    trees: { total: 36, living: 36, tappable: Math.min(36, 8 + step * 2), tapping: Math.min(36, step * 2) },
+    economics: {
+      revenue: Number((step * 85).toFixed(2)),
+      cost: Number((step * 12).toFixed(2)),
+      profit: Number((step * 73).toFixed(2)),
+      latex_lb: Number((step * 95).toFixed(2)),
+      water_gallons: Number((step * 18).toFixed(1)),
+      fertilizer_units: Number((step * 4.2).toFixed(2)),
+    },
+    budget: { annual: 800, spent_this_year: Number((step * 12).toFixed(2)), remaining_this_year: Number((800 - step * 12).toFixed(2)) },
+    prices: {
+      rubber_per_lb: Number((0.88 - step * 0.008).toFixed(4)),
+      water_per_gallon: Number((0.0037 + step * 0.00005).toFixed(4)),
+      fertilizer_per_unit: Number((2.53 - step * 0.02).toFixed(4)),
+    },
+  })
 }
 
 export function defaultNextActions(step = 0): AgentAction[] {
+  const moistureLow = step % 4 === 1
+  const nutrientsLow = step % 5 === 2
   const actions: AgentAction[] = [
-    { id: 'a1', label: 'Increase irrigation', detail: 'Water level +15%', confidence: 0.82 },
-    { id: 'a2', label: 'Add nitrogen', detail: 'Nutrients +25 ppm', confidence: 0.64 },
-    { id: 'a3', label: 'Lower temperature', detail: 'Target 22 °C', confidence: 0.41 },
-    { id: 'a4', label: 'Hold', detail: 'No change this step', confidence: 0.18 },
+    {
+      id: 'advance',
+      label: 'Advance',
+      detail: '365 days',
+      confidence: 0.91,
+      tool: 'advance',
+    },
+    {
+      id: 'tap',
+      label: 'Tap',
+      detail: 'Start tapping mature trees',
+      confidence: step < 2 ? 0.55 : 0.84,
+      tool: 'tap',
+    },
+    {
+      id: 'simulate',
+      label: 'Simulate',
+      detail: 'Dry-run multi-year plan on a copy',
+      confidence: 0.48,
+      tool: 'simulate',
+    },
+    {
+      id: 'observe',
+      label: 'Observe',
+      detail: 'JSON snapshot of the whole farm',
+      confidence: 0.35,
+      tool: 'observe',
+    },
   ]
-  if (step % 7 === 3) {
+  if (moistureLow) {
     return [
-      { id: 'a1', label: 'Prune canopy', detail: 'Remove lower branches', confidence: 0.71 },
+      {
+        id: 'water',
+        label: 'Water',
+        detail: '5 gal/tree on all',
+        confidence: 0.86,
+        tool: 'water',
+      },
       ...actions.slice(1),
+    ]
+  }
+  if (nutrientsLow) {
+    return [
+      {
+        id: 'fertilize',
+        label: 'Fertilize',
+        detail: 'N0.2 P0.15 K0.15 on all',
+        confidence: 0.78,
+        tool: 'fertilize',
+      },
+      ...actions.slice(1),
+    ]
+  }
+  if (step % 6 === 0) {
+    return [
+      {
+        id: 'quote',
+        label: 'Quote',
+        detail: 'Preview fertilize cost before spending',
+        confidence: 0.62,
+        tool: 'quote',
+      },
+      ...actions,
     ]
   }
   return actions
@@ -369,7 +617,7 @@ function validateTrees(raw: unknown, where: string): Result<TreeState[]> {
     if (typeof t.y !== 'number' || !Number.isFinite(t.y)) {
       return { value: null, error: `${where}[${i}].y must be a number.` }
     }
-    for (const k of ['size', 'health'] as const) {
+    for (const k of ['size', 'health', 'girthCm', 'row', 'col'] as const) {
       if (t[k] !== undefined && (typeof t[k] !== 'number' || !Number.isFinite(t[k] as number))) {
         return { value: null, error: `${where}[${i}].${k} must be a number.` }
       }
@@ -377,12 +625,26 @@ function validateTrees(raw: unknown, where: string): Result<TreeState[]> {
     if (t.id !== undefined && typeof t.id !== 'string') {
       return { value: null, error: `${where}[${i}].id must be a string.` }
     }
+    if (t.stage !== undefined && (typeof t.stage !== 'string' || !TREE_STAGES.has(t.stage as TreeStage))) {
+      return { value: null, error: `${where}[${i}].stage must be a tree stage.` }
+    }
+    for (const k of ['tapping', 'alive'] as const) {
+      if (t[k] !== undefined && typeof t[k] !== 'boolean') {
+        return { value: null, error: `${where}[${i}].${k} must be a boolean.` }
+      }
+    }
     trees.push({
       id: t.id as string | undefined,
+      row: t.row as number | undefined,
+      col: t.col as number | undefined,
       x: t.x,
       y: t.y,
+      girthCm: t.girthCm as number | undefined,
       size: t.size as number | undefined,
       health: t.health as number | undefined,
+      stage: t.stage as TreeStage | undefined,
+      tapping: t.tapping as boolean | undefined,
+      alive: t.alive as boolean | undefined,
     })
   }
   return { value: trees, error: null }
@@ -441,12 +703,15 @@ function validateAgentAction(raw: unknown, where: string): Result<AgentAction> {
   if (typeof a.confidence !== 'number' || !Number.isFinite(a.confidence)) {
     return { value: null, error: `${where}.confidence must be a number.` }
   }
+  const tool = validateFarmTool(a.tool, `${where}.tool`)
+  if (tool.error !== null) return tool
   return {
     value: {
       id: a.id,
       label: a.label,
       detail: a.detail,
       confidence: clamp(a.confidence, 0, 1),
+      tool: tool.value,
     },
     error: null,
   }
@@ -477,14 +742,22 @@ function validateEnvironment(raw: unknown, where: string): Result<EnvironmentSta
   if (e.crop !== undefined && typeof e.crop !== 'string') {
     return { value: null, error: `${where}.crop must be a string.` }
   }
-  for (const k of ['episode', 'step'] as const) {
+  for (const k of ['year', 'day', 'dayOfYear', 'yearsLeft', 'episode', 'step'] as const) {
     if (e[k] !== undefined && (typeof e[k] !== 'number' || !Number.isFinite(e[k] as number))) {
       return { value: null, error: `${where}.${k} must be a number.` }
     }
   }
+  if (e.finished !== undefined && typeof e.finished !== 'boolean') {
+    return { value: null, error: `${where}.finished must be a boolean.` }
+  }
   return {
     value: {
       crop: e.crop as string | undefined,
+      year: e.year as number | undefined,
+      day: e.day as number | undefined,
+      dayOfYear: e.dayOfYear as number | undefined,
+      yearsLeft: e.yearsLeft as number | undefined,
+      finished: e.finished as boolean | undefined,
       episode: e.episode as number | undefined,
       step: e.step as number | undefined,
       metrics: metrics.value!,
@@ -640,90 +913,363 @@ function frac(n: number) {
   return r - Math.floor(r)
 }
 
-/** Number of days in the bundled example / test run (one year). */
-export const EXAMPLE_DAY_COUNT = 365
+/** Number of yearly snapshots in the bundled example run (30-year horizon). */
+export const EXAMPLE_YEAR_COUNT = 30
 
-/** Example run used to seed the editor (365 days with trees, actions, and metrics). */
-export function exampleRun(): RunState {
-  const cols = 4
-  const rows = 8
+const MATURE_AGE_YEARS = 6
+const MATURE_GIRTH_CM = 45
+const SEEDLING_GIRTH_CM = 3
+const MAX_GIRTH_CM = 70
+const START_YEAR = 2025
+const ANNUAL_BUDGET = 800
+
+interface ExampleTree {
+  row: number
+  col: number
+  startAgeYears: number
+  growthRate: number
+  yieldMultiplier: number
+  tapping: boolean
+  alive: boolean
+}
+
+function treeStage(ageYears: number, girthCm: number, tapping: boolean, alive: boolean): TreeStage {
+  if (!alive) return 'dead'
+  if (ageYears >= MATURE_AGE_YEARS && girthCm >= MATURE_GIRTH_CM) {
+    return tapping ? 'tapping' : 'mature'
+  }
+  if (ageYears < 2) return 'seedling'
+  return 'young'
+}
+
+function exampleFarmActions(
+  yearIndex: number,
+  moisture: number,
+  nutrients: number,
+  tappable: number,
+): AgentAction[] {
+  const base: AgentAction[] = [
+    {
+      id: 'advance',
+      label: 'Advance',
+      detail: '365 days',
+      confidence: 0.91,
+      tool: 'advance',
+    },
+    {
+      id: 'tap',
+      label: 'Tap',
+      detail: tappable > 0 ? 'Start tapping mature trees' : 'No mature trees yet',
+      confidence: tappable > 0 ? 0.84 : 0.35,
+      tool: 'tap',
+    },
+    {
+      id: 'simulate',
+      label: 'Simulate',
+      detail: 'Dry-run multi-year plan on a copy',
+      confidence: 0.48,
+      tool: 'simulate',
+    },
+    {
+      id: 'status',
+      label: 'Status',
+      detail: 'Economics, prices, budget, years left',
+      confidence: 0.32,
+      tool: 'status',
+    },
+  ]
+  if (moisture < 0.45) {
+    return [
+      {
+        id: 'water',
+        label: 'Water',
+        detail: '5 gal/tree on all',
+        confidence: 0.86,
+        tool: 'water',
+      },
+      ...base.slice(1),
+    ]
+  }
+  if (nutrients < 0.35) {
+    return [
+      {
+        id: 'fertilize',
+        label: 'Fertilize',
+        detail: 'N0.2 P0.15 K0.15 on all',
+        confidence: 0.78,
+        tool: 'fertilize',
+      },
+      ...base.slice(1),
+    ]
+  }
+  if (yearIndex % 5 === 0) {
+    return [
+      {
+        id: 'quote',
+        label: 'Quote',
+        detail: 'Preview fertilize cost before spending',
+        confidence: 0.62,
+        tool: 'quote',
+      },
+      ...base,
+    ]
+  }
+  return base
+}
+
+function exampleUntrainedActions(yearIndex: number, tappable: number): AgentAction[] {
+  return [
+    {
+      id: 'fertilize',
+      label: 'Fertilize',
+      detail: 'N5 P5 K5 on all',
+      confidence: 0.92,
+      tool: 'fertilize',
+    },
+    {
+      id: 'water',
+      label: 'Water',
+      detail: '50 gal/tree on all',
+      confidence: 0.88,
+      tool: 'water',
+    },
+    {
+      id: 'advance',
+      label: 'Advance',
+      detail: '365 days',
+      confidence: 0.85,
+      tool: 'advance',
+    },
+    {
+      id: 'tap',
+      label: 'Tap',
+      detail: tappable > 0 ? 'Start tapping mature trees' : 'No mature trees yet',
+      confidence: 0.11,
+      tool: 'tap',
+    },
+    {
+      id: 'observe',
+      label: 'Observe',
+      detail: 'JSON snapshot of the whole farm',
+      confidence: yearIndex % 4 === 0 ? 0.38 : 0.22,
+      tool: 'observe',
+    },
+  ]
+}
+
+type ExampleStrategy = 'trained' | 'untrained'
+
+function buildExampleRun(strategy: ExampleStrategy): RunState {
+  const rows = 6
+  const cols = 6
   const spacing = 5
   const fieldSize = Math.ceil(Math.max((cols - 1) * spacing, (rows - 1) * spacing) + 14)
-  const dayCount = EXAMPLE_DAY_COUNT
+  const yearCount = EXAMPLE_YEAR_COUNT
 
-  const cells = Array.from({ length: cols * rows }, (_, i) => ({
-    finalSize: Number((0.7 + frac(i + 1) * 0.8).toFixed(2)),
-    germinate: frac(i + 17) * 0.35,
-    healthDip: frac(i + 53) < 0.18 ? 0.35 + frac(i + 71) * 0.3 : 0,
-  }))
+  const trees: ExampleTree[] = []
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = r * cols + c
+      trees.push({
+        row: r,
+        col: c,
+        startAgeYears: Number((frac(i + 1) * 8).toFixed(2)),
+        growthRate: 0.75 + frac(i + 11) * 0.5,
+        yieldMultiplier: 0.8 + frac(i + 29) * 0.45,
+        tapping: false,
+        alive: true,
+      })
+    }
+  }
+
+  let revenue = 0
+  let cost = 0
+  let latexLb = 0
+  let waterGallons = 0
+  let fertilizerUnits = 0
+  let prevMetrics: StateMetric[] | undefined
 
   const days: DayRecord[] = []
-  for (let d = 0; d < dayCount; d++) {
-    const progress = d / Math.max(1, dayCount - 1)
-    const trees: TreeState[] = []
-    let i = 0
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const cell = cells[i]
-        i++
-        if (progress < cell.germinate) continue
-        const span = 1 - cell.germinate
-        const local = span <= 0 ? 1 : clamp((progress - cell.germinate) / span, 0, 1)
-        const size = Number((cell.finalSize * (0.12 + 0.88 * smoothstep(local))).toFixed(3))
-        const health =
-          cell.healthDip > 0
-            ? Number(clamp(1 - cell.healthDip * smoothstep(clamp((progress - 0.6) / 0.4, 0, 1)), 0, 1).toFixed(3))
-            : 1
-        trees.push({
-          id: `tree-${r}-${c}`,
-          x: (c - (cols - 1) / 2) * spacing,
-          y: (r - (rows - 1) / 2) * spacing,
-          size,
-          health,
-        })
+  for (let y = 0; y < yearCount; y++) {
+    const year = START_YEAR + y
+    const simDay = y * 365
+    const rubberPrice = Number((0.88 * Math.pow(1.02, y) * (0.94 + frac(y + 3) * 0.12)).toFixed(4))
+    const waterPrice = Number((0.0037 * Math.pow(1.03, y)).toFixed(4))
+    const fertilizerPrice = Number((2.53 * Math.pow(1.025, y) * (0.92 + frac(y + 7) * 0.16)).toFixed(4))
+
+    let spentThisYear = 0
+    let tappable = 0
+    let tappingCount = 0
+    let living = 0
+    let sumAge = 0
+    let sumGirth = 0
+    let sumHealth = 0
+    let sumPanel = 0
+    let sumMoisture = 0
+    let sumNutrients = 0
+
+    const treeStates: TreeState[] = []
+    for (const tree of trees) {
+      if (!tree.alive) continue
+      const ageYears = tree.startAgeYears + y
+      if (ageYears >= 34 || (strategy === 'untrained' && y > 18 && frac(tree.row * 17 + tree.col) < 0.07 * (y - 18))) {
+        tree.alive = false
+        continue
       }
+      if (strategy === 'trained' && y > 24 && frac(tree.row * 17 + tree.col) < 0.04 * (y - 24)) {
+        tree.alive = false
+        continue
+      }
+
+      living++
+      const maturityFrac = clamp(ageYears / MATURE_AGE_YEARS, 0, 1)
+      const girthCm = clamp(
+        SEEDLING_GIRTH_CM +
+          (MATURE_GIRTH_CM + 8 - SEEDLING_GIRTH_CM) * (1 - Math.exp(-2.2 * maturityFrac)) * tree.growthRate,
+        SEEDLING_GIRTH_CM,
+        MAX_GIRTH_CM,
+      )
+      const isTappable = ageYears >= MATURE_AGE_YEARS && girthCm >= MATURE_GIRTH_CM
+      if (isTappable) {
+        tappable++
+        if (strategy === 'trained' && y >= 1) tree.tapping = true
+      }
+      if (tree.tapping && isTappable) tappingCount++
+
+      const moisture =
+        strategy === 'trained'
+          ? clamp(0.52 + frac(y * 13 + tree.row + tree.col) * 0.28 - (tree.tapping ? 0.08 : 0), 0.15, 1)
+          : clamp(0.48 - y * 0.014 + frac(y * 13 + tree.row + tree.col) * 0.1, 0.08, 0.42)
+      const nutrients =
+        strategy === 'trained'
+          ? clamp(0.55 - y * 0.018 + frac(y * 7 + tree.col) * 0.12, 0.08, 1)
+          : clamp(0.5 - y * 0.022 + frac(y * 7 + tree.col) * 0.08, 0.05, 0.38)
+      const panelHealth =
+        strategy === 'trained'
+          ? clamp(1 - (tree.tapping ? y * 0.012 : 0), 0.45, 1)
+          : clamp(1 - y * 0.008, 0.55, 1)
+      const health =
+        strategy === 'trained'
+          ? clamp(0.35 * (moisture / 0.5) + 0.3 * (nutrients / 0.5) + 0.2 * panelHealth + 0.15, 0.35, 1)
+          : clamp(0.35 * (moisture / 0.5) + 0.3 * (nutrients / 0.5) + 0.2 * panelHealth + 0.05, 0.2, 0.72)
+
+      sumAge += ageYears
+      sumGirth += girthCm
+      sumHealth += health
+      sumPanel += panelHealth
+      sumMoisture += moisture
+      sumNutrients += nutrients
+
+      const stage = treeStage(ageYears, girthCm, tree.tapping, tree.alive)
+      treeStates.push({
+        id: `tree-${tree.row}-${tree.col}`,
+        row: tree.row,
+        col: tree.col,
+        x: (tree.col - (cols - 1) / 2) * spacing,
+        y: (tree.row - (rows - 1) / 2) * spacing,
+        girthCm: Number(girthCm.toFixed(2)),
+        health: Number(health.toFixed(3)),
+        stage,
+        tapping: tree.tapping,
+        alive: true,
+      })
     }
 
-    const water = clamp(35 + progress * 30 + frac(d + 2) * 8, 0, 100)
-    const nutrients = clamp(110 + progress * 40, 0, 220)
-    const plantSize = Number((12 + progress * 48 + trees.length * 0.4).toFixed(1))
+    const avg = (n: number) => (living > 0 ? n / living : 0)
+    const avgMoisture = avg(sumMoisture)
+    const avgNutrients = avg(sumNutrients)
+
+    let yearCost = 0
+    if (strategy === 'trained') {
+      if (avgMoisture < 0.45) {
+        const gallons = 5 * living * 0.6
+        yearCost += gallons * waterPrice
+        waterGallons += gallons
+      }
+      if (avgNutrients < 0.35) {
+        const units = living * 0.6
+        yearCost += units * fertilizerPrice
+        fertilizerUnits += units
+      }
+    } else {
+      // Worst-case operator: burn the full annual budget on over-watering and over-fertilizing.
+      yearCost = ANNUAL_BUDGET
+      waterGallons += living * 12
+      fertilizerUnits += living * 4.5
+    }
+    cost += yearCost
+    spentThisYear = yearCost
+
+    const yieldFactor = strategy === 'trained' ? avg(sumHealth) / 0.85 : avg(sumHealth) / 1.1
+    const yearLatex = tappingCount * (18 + frac(y + 5) * 8) * yieldFactor
+    const yearRevenue = yearLatex * rubberPrice
+    latexLb += yearLatex
+    revenue += yearRevenue
+
+    const observe = {
+      averages: {
+        age_years: Number(avg(sumAge).toFixed(2)),
+        girth_cm: Number(avg(sumGirth).toFixed(2)),
+        health: Number(avg(sumHealth).toFixed(3)),
+        panel_health: Number(avg(sumPanel).toFixed(3)),
+        moisture: Number(avgMoisture.toFixed(3)),
+        nutrients: Number(avgNutrients.toFixed(3)),
+      },
+      trees: { total: rows * cols, living, tappable, tapping: tappingCount },
+      economics: {
+        revenue: Number(revenue.toFixed(2)),
+        cost: Number(cost.toFixed(2)),
+        profit: Number((revenue - cost).toFixed(2)),
+        latex_lb: Number(latexLb.toFixed(2)),
+        water_gallons: Number(waterGallons.toFixed(1)),
+        fertilizer_units: Number(fertilizerUnits.toFixed(2)),
+      },
+      budget: {
+        annual: ANNUAL_BUDGET,
+        spent_this_year: Number(spentThisYear.toFixed(2)),
+        remaining_this_year: Number((ANNUAL_BUDGET - spentThisYear).toFixed(2)),
+      },
+      prices: {
+        rubber_per_lb: rubberPrice,
+        water_per_gallon: waterPrice,
+        fertilizer_per_unit: fertilizerPrice,
+      },
+    }
+
+    const metrics = farmMetrics(observe, prevMetrics)
+    prevMetrics = metrics
 
     days.push({
-      label: `Day ${d}`,
-      trees: { field: { size: fieldSize }, trees },
+      label: `Year ${year}`,
+      trees: { field: { size: fieldSize }, trees: treeStates },
       nextAction:
-        water < 45
-          ? [
-              { id: 'a1', label: 'Increase irrigation', detail: 'Water level +15%', confidence: 0.86 },
-              { id: 'a2', label: 'Add nitrogen', detail: 'Nutrients +25 ppm', confidence: 0.58 },
-              { id: 'a3', label: 'Hold', detail: 'No change this step', confidence: 0.22 },
-            ]
-          : d % 7 === 3
-            ? [
-                { id: 'a1', label: 'Prune canopy', detail: 'Remove lower branches', confidence: 0.74 },
-                { id: 'a2', label: 'Increase irrigation', detail: 'Water level +10%', confidence: 0.52 },
-                { id: 'a3', label: 'Hold', detail: 'No change this step', confidence: 0.19 },
-              ]
-            : defaultNextActions(d),
+        strategy === 'trained'
+          ? exampleFarmActions(y, avgMoisture, avgNutrients, tappable)
+          : exampleUntrainedActions(y, tappable),
       environment: {
-        crop: 'Rubber Tree',
-        episode: 42,
-        step: d,
-        metrics: [
-          { key: 'plant_size', label: 'Plant size', value: plantSize, unit: 'cm', range: [0, 120], trend: 'up' },
-          { key: 'soil_ph', label: 'Soil pH', value: 6.4, unit: 'pH', range: [6.0, 6.8], trend: 'flat' },
-          { key: 'humidity', label: 'Humidity', value: Number((55 + frac(d) * 12).toFixed(0)), unit: '%', range: [50, 70], trend: d % 5 === 0 ? 'down' : 'flat' },
-          { key: 'temperature', label: 'Temperature', value: Number((22 + frac(d + 11) * 4).toFixed(1)), unit: '°C', range: [18, 27], trend: 'up' },
-          { key: 'water_level', label: 'Water level', value: Number(water.toFixed(0)), unit: '%', range: [40, 80], trend: water < 45 ? 'down' : 'up' },
-          { key: 'light', label: 'Light', value: 720, unit: 'µmol', range: [400, 900], trend: 'flat' },
-          { key: 'nutrients', label: 'Nutrients (N)', value: Number(nutrients.toFixed(0)), unit: 'ppm', range: [100, 200], trend: nutrients < 120 ? 'down' : 'up' },
-          { key: 'co2', label: 'CO₂', value: 410, unit: 'ppm', range: [350, 500], trend: 'flat' },
-        ],
+        crop: 'Rubber plantation',
+        year,
+        day: simDay,
+        dayOfYear: 0,
+        yearsLeft: Number((yearCount - y).toFixed(2)),
+        finished: y >= yearCount - 1,
+        step: y,
+        metrics,
       },
     })
   }
 
   return { field: { size: fieldSize }, days }
+}
+
+/** Sensible operator: tap mature trees, spend only when soil needs it. */
+export function exampleRun(): RunState {
+  return buildExampleRun('trained')
+}
+
+/** Untrained operator: never taps, maxes the budget every year — low profit. */
+export function exampleUntrainedRun(): RunState {
+  return buildExampleRun('untrained')
 }
 
 /** Example timeline used to seed the editor. */
