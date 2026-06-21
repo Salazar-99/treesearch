@@ -5,31 +5,39 @@ import type { MutableRefObject } from 'react'
 import { sampleWatering, type PlaybackClock } from './sceneState'
 
 const ROBOT_COUNT = 4
+/** Overall robot scale. The base mesh is ~0.7 m tall; this lifts it to ~3 m so
+ *  it reads clearly against the ~7 m trees. */
+const ROBOT_SCALE = 4
 const BODY = new THREE.Color('#6b8cae')
 const ACCENT = new THREE.Color('#4a90c4')
 const TANK = new THREE.Color('#7ec8e3')
 
+/** A robot patrols one lane: it holds a fixed x (its row) and drives back and
+ *  forth along z, the length of the crop row. */
 interface RobotPath {
-  cx: number
-  cz: number
-  rx: number
-  rz: number
+  /** Fixed lane position across the field (world x). */
+  laneX: number
+  /** Half the patrol length along the row (world z). */
+  travel: number
+  /** Patrol rate. */
   speed: number
+  /** Start offset so robots aren't synchronised. */
   phase: number
-  wobble: number
 }
 
 function makePaths(fieldHalf: number): RobotPath[] {
-  const span = fieldHalf * 0.72
-  return Array.from({ length: ROBOT_COUNT }, (_, i) => ({
-    cx: (i % 2 === 0 ? -1 : 1) * span * 0.18 * (i % 3),
-    cz: (i < 2 ? -1 : 1) * span * 0.14 * (i % 2),
-    rx: span * (0.55 + (i % 3) * 0.12),
-    rz: span * (0.45 + (i % 2) * 0.15),
-    speed: 0.55 + i * 0.12,
-    phase: (i / ROBOT_COUNT) * Math.PI * 2,
-    wobble: 0.08 + i * 0.02,
-  }))
+  // Keep lanes inside the planted area and patrol most of the row length.
+  const laneReach = fieldHalf * 0.5
+  const travel = fieldHalf * 0.72
+  return Array.from({ length: ROBOT_COUNT }, (_, i) => {
+    const frac = ROBOT_COUNT === 1 ? 0.5 : i / (ROBOT_COUNT - 1)
+    return {
+      laneX: -laneReach + frac * laneReach * 2,
+      travel,
+      speed: 0.5 + i * 0.08,
+      phase: (i / ROBOT_COUNT) * Math.PI * 2,
+    }
+  })
 }
 
 function RobotMesh({
@@ -49,33 +57,31 @@ function RobotMesh({
   const spray = useRef<THREE.Mesh>(null!)
 
   useFrame(() => {
+    if (!root.current) return
     const activity = activityRef.current
     const time = timeRef.current
-    if (!root.current || activity < 0.02) {
-      root.current.visible = false
-      return
-    }
-    root.current.visible = true
 
-    const walk = time * path.speed + path.phase
-    const x = path.cx + Math.cos(walk) * path.rx
-    const z = path.cz + Math.sin(walk * 1.17) * path.rz
-    const heading = Math.atan2(
-      -Math.sin(walk * 1.17) * path.rz * 1.17,
-      -Math.sin(walk) * path.rx,
-    )
+    // Drive up and down the row: fixed lane, oscillate along z.
+    const drive = time * path.speed + path.phase
+    const osc = Math.sin(drive)
+    const z = osc * path.travel
+    // Face the direction of travel (flip at the row ends).
+    const heading = Math.cos(drive) >= 0 ? 0 : Math.PI
 
-    root.current.position.set(x, 0, z)
+    root.current.position.set(path.laneX, 0, z)
     root.current.rotation.y = heading
-    root.current.scale.setScalar(0.85 + activity * 0.15)
+    root.current.scale.setScalar(ROBOT_SCALE)
 
-    const stride = Math.sin(walk * 6) * path.wobble * activity
+    // Walking gait, always shuffling along; a touch livelier when watering.
+    const gait = 1 + activity
+    const stride = Math.sin(drive * 6) * 0.08 * gait
     legL.current.position.y = 0.11 + Math.max(0, stride)
     legR.current.position.y = 0.11 + Math.max(0, -stride)
-    armL.current.rotation.x = -0.35 + Math.sin(walk * 5) * 0.25 * activity
-    hose.current.rotation.z = 0.4 + Math.sin(walk * 8) * 0.15 * activity
+    armL.current.rotation.x = -0.35 + Math.sin(drive * 5) * 0.25 * gait
+    hose.current.rotation.z = 0.4 + Math.sin(drive * 8) * 0.15 * activity
     const mat = spray.current.material as THREE.MeshStandardMaterial
-    mat.emissiveIntensity = 0.35 * activity
+    mat.emissiveIntensity = 0.6 * activity
+    spray.current.visible = activity > 0.05
   })
 
   return (

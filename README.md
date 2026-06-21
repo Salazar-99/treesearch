@@ -1,6 +1,6 @@
 # treesearch
 
-An RL project for **long-horizon offline optimization**: an agent writes a 30-year operating schedule for a rubber plantation, submits it to a fast simulator, reads the resulting profit, and iterates to find the best plan it can. The repo includes the [HUD](https://docs.hud.ai/v6/start) environment, a GRPO training loop on the [HUD platform](https://docs.hud.ai/v6/core/training), and a browser visualizer for inspecting rollouts.
+RL for autonomous farming: an agent writes a 30-year operating schedule for a rubber plantation, submits it to a fast simulator, reads the resulting profit, and iterates to find the best plan it can. The repo includes the [HUD](https://docs.hud.ai/v6/start) environment, a GRPO training loop on the [HUD platform](https://docs.hud.ai/v6/core/training), and a browser visualizer for inspecting rollouts.
 
 ## Project layout
 

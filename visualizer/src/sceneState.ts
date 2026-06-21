@@ -166,7 +166,7 @@ function hashString(s: string): number {
 export const REFERENCE_GIRTH_CM = 50
 
 export function girthToSize(girthCm: number): number {
-  return clamp(girthCm / REFERENCE_GIRTH_CM, 0.12, 1.4)
+  return clamp(girthCm / REFERENCE_GIRTH_CM, 0.08, 1.4)
 }
 
 export function resolveTrees(state: SceneState): ResolvedTree[] {
@@ -179,7 +179,7 @@ export function resolveTrees(state: SceneState): ResolvedTree[] {
         id,
         x: t.x,
         y: t.y,
-        size: clamp(sizeFromGirth ?? t.size ?? 1, 0.12, 4),
+        size: clamp(sizeFromGirth ?? t.size ?? 1, 0.08, 4),
         health: clamp(t.health ?? 1, 0, 1),
         seed: hashString(id),
       }
@@ -926,9 +926,12 @@ const ANNUAL_BUDGET = 800
 interface ExampleTree {
   row: number
   col: number
+  /** Years of age when the run begins (0 = newly planted seedlings). */
   startAgeYears: number
   growthRate: number
   yieldMultiplier: number
+  /** 1 = normal growth; lower = neglected plot that never fully matures (untrained only). */
+  growthPotential: number
   tapping: boolean
   alive: boolean
 }
@@ -1070,12 +1073,14 @@ function buildExampleRun(strategy: ExampleStrategy): RunState {
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const i = r * cols + c
+      const stunted = frac(i + 43) < 0.22
       trees.push({
         row: r,
         col: c,
-        startAgeYears: Number((frac(i + 1) * 8).toFixed(2)),
+        startAgeYears: 0,
         growthRate: 0.75 + frac(i + 11) * 0.5,
         yieldMultiplier: 0.8 + frac(i + 29) * 0.45,
+        growthPotential: stunted ? 0.34 + frac(i + 67) * 0.22 : 1,
         tapping: false,
         alive: true,
       })
@@ -1112,7 +1117,16 @@ function buildExampleRun(strategy: ExampleStrategy): RunState {
     for (const tree of trees) {
       if (!tree.alive) continue
       const ageYears = tree.startAgeYears + y
-      if (ageYears >= 34 || (strategy === 'untrained' && y > 18 && frac(tree.row * 17 + tree.col) < 0.07 * (y - 18))) {
+      if (ageYears >= 34) {
+        tree.alive = false
+        continue
+      }
+      if (
+        strategy === 'untrained' &&
+        tree.growthPotential < 0.55 &&
+        y > 22 &&
+        frac(tree.row * 17 + tree.col) < 0.05 * (y - 22)
+      ) {
         tree.alive = false
         continue
       }
@@ -1123,35 +1137,60 @@ function buildExampleRun(strategy: ExampleStrategy): RunState {
 
       living++
       const maturityFrac = clamp(ageYears / MATURE_AGE_YEARS, 0, 1)
-      const girthCm = clamp(
+      const ageGirthCm =
         SEEDLING_GIRTH_CM +
-          (MATURE_GIRTH_CM + 8 - SEEDLING_GIRTH_CM) * (1 - Math.exp(-2.2 * maturityFrac)) * tree.growthRate,
-        SEEDLING_GIRTH_CM,
-        MAX_GIRTH_CM,
-      )
-      const isTappable = ageYears >= MATURE_AGE_YEARS && girthCm >= MATURE_GIRTH_CM
-      if (isTappable) {
-        tappable++
-        if (strategy === 'trained' && y >= 1) tree.tapping = true
-      }
-      if (tree.tapping && isTappable) tappingCount++
+        (MATURE_GIRTH_CM + 8 - SEEDLING_GIRTH_CM) * (1 - Math.exp(-2.2 * maturityFrac)) * tree.growthRate
 
+      const yearsTapping = tree.tapping ? Math.max(0, ageYears - MATURE_AGE_YEARS) : 0
       const moisture =
         strategy === 'trained'
           ? clamp(0.52 + frac(y * 13 + tree.row + tree.col) * 0.28 - (tree.tapping ? 0.08 : 0), 0.15, 1)
-          : clamp(0.48 - y * 0.014 + frac(y * 13 + tree.row + tree.col) * 0.1, 0.08, 0.42)
+          : clamp(
+              (tree.growthPotential >= 0.9 ? 0.48 : 0.38) -
+                y * 0.008 +
+                frac(y * 13 + tree.row + tree.col) * 0.12,
+              0.12,
+              0.55,
+            )
       const nutrients =
         strategy === 'trained'
           ? clamp(0.55 - y * 0.018 + frac(y * 7 + tree.col) * 0.12, 0.08, 1)
-          : clamp(0.5 - y * 0.022 + frac(y * 7 + tree.col) * 0.08, 0.05, 0.38)
+          : clamp(
+              (tree.growthPotential >= 0.9 ? 0.5 : 0.38) -
+                y * 0.012 +
+                frac(y * 7 + tree.col) * 0.08,
+              0.1,
+              0.48,
+            )
       const panelHealth =
         strategy === 'trained'
-          ? clamp(1 - (tree.tapping ? y * 0.012 : 0), 0.45, 1)
-          : clamp(1 - y * 0.008, 0.55, 1)
+          ? clamp(1 - yearsTapping * 0.03, 0.45, 1)
+          : clamp(0.9 - y * 0.008, 0.5, 1)
       const health =
         strategy === 'trained'
           ? clamp(0.35 * (moisture / 0.5) + 0.3 * (nutrients / 0.5) + 0.2 * panelHealth + 0.15, 0.35, 1)
-          : clamp(0.35 * (moisture / 0.5) + 0.3 * (nutrients / 0.5) + 0.2 * panelHealth + 0.05, 0.2, 0.72)
+          : clamp(
+              0.35 * (moisture / 0.5) +
+                0.3 * (nutrients / 0.5) +
+                0.2 * panelHealth +
+                0.05 * tree.growthPotential,
+              tree.growthPotential >= 0.9 ? 0.42 : 0.22,
+              tree.growthPotential >= 0.9 ? 0.68 : 0.52,
+            )
+
+      const growthGate = strategy === 'trained' ? 1 : tree.growthPotential
+      const girthCm = clamp(
+        SEEDLING_GIRTH_CM + (ageGirthCm - SEEDLING_GIRTH_CM) * growthGate,
+        SEEDLING_GIRTH_CM,
+        MAX_GIRTH_CM,
+      )
+
+      const isTappable = ageYears >= MATURE_AGE_YEARS && girthCm >= MATURE_GIRTH_CM
+      if (isTappable) {
+        tappable++
+        if (strategy === 'trained') tree.tapping = true
+      }
+      if (tree.tapping && isTappable) tappingCount++
 
       sumAge += ageYears
       sumGirth += girthCm
