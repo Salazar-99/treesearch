@@ -1,4 +1,4 @@
-"""Taskset for the treefarm environment.
+"""Taskset for the treesearch environment.
 
 A taskset is just a list of instantiated task templates. Each entry binds
 concrete parameters to a template defined in `env.py`. Run an agent against

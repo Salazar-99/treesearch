@@ -1,11 +1,11 @@
-"""GRPO training loop skeleton for the treefarm environment.
+"""GRPO training loop skeleton for the treesearch environment.
 
 Docs: https://docs.hud.ai/v6/core/training
 
 Before running:
     1. Fork a trainable base model (see https://docs.hud.ai/v6/core/training#get-a-trainable-model):
        uv run hud models list
-       uv run hud models fork Qwen/Qwen3.5-4B --name treefarm-rl
+       uv run hud models fork Qwen/Qwen3.5-4B --name treesearch-rl
     2. Set your HUD API key (https://hud.ai/project/api-keys):
        uv run hud set HUD_API_KEY=your-key-here
 
@@ -26,7 +26,7 @@ from hud.eval import LocalRuntime
 ENV_DIR = Path(__file__).resolve().parent.parent / "environment"
 
 # Trainable model slug from `hud models fork ... --name <slug>`.
-MODEL = "treefarm-rl"
+MODEL = "treesearch-rl"
 
 # GRPO runs each task `group` times; advantages are relative within the group.
 GROUP_SIZE = 8

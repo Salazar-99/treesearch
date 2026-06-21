@@ -1,4 +1,4 @@
-# treefarm
+# treesearch
 
 A reinforcement-learning project made of two independent pieces:
 
